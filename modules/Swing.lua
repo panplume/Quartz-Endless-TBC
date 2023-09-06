@@ -1,3 +1,6 @@
+--Endless TBC with improved haste proc and Paladin seal twisting
+-- both seal will remains for 300ms, guess an AA must land within this window
+
 --[[
 	Copyright (C) 2006-2007 Nymbia
 	Copyright (C) 2010 Hendrik "Nevcairiel" Leppkes < h.leppkes@gmail.com >
@@ -50,6 +53,13 @@ local resetautoshotspells = {
 }
 
 local swingbar, swingbar_width, swingstatusbar, remainingtext, durationtext
+--Paladin twisting
+local doublesealduration = 0.3 --timing with 2 seals
+local GCDduration = 1.5 --default, updated via events
+local twistframe
+local twistsealtiming --twist between this line and AA landing
+local twistcasttiming --don't cast after this or twist becomes impossible
+--
 local swingmode -- nil is none, 0 is meleeing, 1 is autoshooting
 local starttime, duration
 local slamstart
@@ -66,6 +76,7 @@ local defaults = {
 		
 		durationtext = true,
 		remainingtext = true,
+		twistingseal = false, --Paladin twisting timing (default:off)
 		
 		x = 300,
 		y = 300,
@@ -81,7 +92,12 @@ local function OnUpdate()
 		if perc > 1 then
 			return swingbar:Hide()
 		else
-			swingstatusbar:SetValue(perc)
+		  swingstatusbar:SetValue(perc)
+		  --update twist lines position
+		  local p = (duration - doublesealduration) * swingbar_width / duration
+		  twistsealtiming:SetPoint("TOPLEFT", p, 0)
+		  p = (duration - doublesealduration - GCDduration) * swingbar_width / duration
+		  twistcasttiming:SetPoint("TOPLEFT", p, 0)
 		end
 	end
 end
@@ -103,6 +119,26 @@ function Swing:OnInitialize()
 
 end
 
+--GCD detection taken from TellMeWhen
+--in TBC GCD is only given when a spell is triggering it
+--see ACTIONBAR_UPDATE_COOLDOWN event where we try to capture it
+local defaultSpells = {
+        ROGUE = 1752, -- sinister strike
+        PRIEST = 139, -- renew
+        DRUID = 774, -- rejuvenation
+        WARRIOR = 6673, -- battle shout
+        MAGE = 168, -- frost armor
+        WARLOCK = 1454, -- life tap
+        PALADIN = 1152, -- purify
+        SHAMAN = 324, -- lightning shield
+        HUNTER = 1978, -- serpent sting
+        DEATHKNIGHT = 45462 -- plague strike
+}
+local defaultSpell = defaultSpells[select(2, UnitClass("player"))]
+local function TellMeWhen_GetGCD()
+        return IsSpellKnown(defaultSpell) and select(2, GetSpellCooldown(defaultSpell)) or 1.5
+end
+
 function Swing:OnEnable()
 	local _, c = UnitClass("player")
 	playerclass = playerclass or c
@@ -114,6 +150,10 @@ function Swing:OnEnable()
 	self:RegisterEvent("STOP_AUTOREPEAT_SPELL")
 	
 	self:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+	--GCD detection
+	self:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
+	--haste proc to redraw swingbar
+	self:RegisterEvent("UNIT_ATTACK_SPEED")
 	
 	self:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 	-- slam stuff
@@ -133,6 +173,16 @@ function Swing:OnEnable()
 		swingbar:SetClampedToScreen(true)
 		
 		swingstatusbar = CreateFrame("StatusBar", nil, swingbar)
+
+		--twist frame at DIALOG strata to display above swingbar
+		twistframe = CreateFrame("Frame", nil, swingbar)
+		twistframe:SetFrameStrata("DIALOG")
+		twistsealtiming = twistframe:CreateTexture()
+		--yellow (twist window until AA lands)
+		twistsealtiming:SetTexture(1, 1, 0, 1)
+		twistcasttiming = twistframe:CreateTexture()
+		--red (no more cast or GCD will prevent twist)
+		twistcasttiming:SetTexture(1, 0, 0, 1)
 		
 		durationtext = swingstatusbar:CreateFontString(nil, "OVERLAY")
 		remainingtext = swingstatusbar:CreateFontString(nil, "OVERLAY")
@@ -181,7 +231,23 @@ do
 				self:MeleeSwing()
 			end
 		elseif (combatevent == "SWING_MISSED") and (bit_band(dstFlags, COMBATLOG_FILTER_ME) == COMBATLOG_FILTER_ME) and spellID == "PARRY" and duration then
-			duration = duration * 0.6
+		  duration = duration * 0.6
+		  --
+		  -- Detect Haste effect (see UNIT_ATTACK_SPEED)
+		  -- Maybe used to add/fix timers for end of buffs (shift
+		  -- twist timing to account for buffs ending before next AA)
+		  --[[
+		elseif (combatevent == "SPELL_AURA_APPLIED" or combatevent == "SPELL_AURA_REMOVED") and (bit_band(dstFlags, COMBATLOG_FILTER_ME) == COMBATLOG_FILTER_ME) and (spellID == 28507 or spellID == 35476 or spellID == 32182 or spellID == 2825) then
+		  --Haste potion: 28507
+		  --Drums of Battle: 35476
+		  --Heroism: 32182
+		  --Bloodlust: 2825
+		  --Dragonspine Trophy: 34775
+		  --Mongoose: 28093 (and more trinket)
+		  --weapon effect
+		  --Flurry: 16280 (shaman), 12970 (warrior), 13877 (rogue)
+		  Swing:UNIT_ATTACK(nil, "player") --update duration
+		  --]]
 		end
 	end
 end
@@ -231,6 +297,17 @@ function Swing:UNIT_ATTACK(event, unit)
 	end
 end
 
+function Swing:UNIT_ATTACK_SPEED(event, unit)
+  Swing:UNIT_ATTACK(event, unit)
+end
+
+function Swing:ACTIONBAR_UPDATE_COOLDOWN()
+  local newGCD = TellMeWhen_GetGCD()
+  if newGCD >= 1 then --else assume it didn't change
+    GCDduration = TellMeWhen_GetGCD()
+  end
+end
+
 function Swing:MeleeSwing()
 	duration = UnitAttackSpeed("player")
 	durationtext:SetFormattedText("%.1f", duration)
@@ -263,6 +340,15 @@ function Swing:ApplySettings()
 			swingbar:SetPoint("BOTTOM", Player.Bar, "TOP", 0, db.swinggap)
 		else -- L["Free"]
 			swingbar:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", db.x, db.y)
+		end
+		if db.twistingseal then
+		  twistsealtiming:SetSize(1, db.swingheight)
+		  twistcasttiming:SetSize(1, db.swingheight)
+		  twistframe:SetPoint("TOPLEFT", 0, 0)
+		  twistframe:SetPoint("BOTTOMRIGHT", 0, 0)
+		  twistframe:Show()
+		else
+		  twistframe:Hide()
 		end
 		
 		swingstatusbar:SetAllPoints(swingbar)
@@ -456,6 +542,14 @@ do
 				name = L["Remaining Text"],
 				desc = L["Toggle display of text showing the time remaining until you can swing again"],
 				order = 110,
+			},
+			twistingseal = {
+				type = "toggle",
+				name = "Twisting Seals",
+				desc = "Toggle display of lines showing the timing to cast (red) and twist seal (yellow)",
+				--name = L["Twisting Seals"],
+				--desc = L["Toggle display of lines showing the timing to cast (red) and twist seal (yellow)"],
+				order = 111,
 			},
 		},
 	}
