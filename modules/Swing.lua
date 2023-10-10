@@ -84,7 +84,8 @@ local defaults = {
 }
 
 local function OnUpdate()
-	if slamstart then return end
+	-- Endless fix: swing continue while slamming
+	--if slamstart then return end
 	if starttime then
 		local spent = GetTime() - starttime
 		remainingtext:SetFormattedText("%.1f", duration - spent)
@@ -258,7 +259,9 @@ function Swing:UNIT_SPELLCAST_SUCCEEDED(event, unit, spell)
 		if resetspells[spell] then
 			self:MeleeSwing()
 		elseif spell == slam and slamstart then
-			starttime = starttime + GetTime() - slamstart
+			--Endless fix: Wotlk doesn't reset, TBC does
+			--starttime = starttime + GetTime() - slamstart
+			starttime = GetTime()
 			slamstart = nil
 		end
 	elseif swingmode == 1 then
